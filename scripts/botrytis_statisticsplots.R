@@ -1,50 +1,338 @@
-# ==============================================================================
-# BOX PLOT WITH ANOVA & TUKEY FOR 4 DPI ONLY (VISIBLE IN RSTUDIO PLOTS)
-# ==============================================================================
 
-if (!requireNamespace("multcompView", quietly = TRUE)) install.packages("multcompView", type = "binary")
-library(ggplot2); library(dplyr); library(readxl); library(multcompView)
+# ============================================================
+# BOTRYTIS RADIAL GROWTH - DAY 5 AND DAY 7 DPI
+# ============================================================
+
+library(ggplot2)
+library(dplyr)
+library(readxl)
+library(multcompView)
+
+
+# ============================================================
+# 1. SELECT EXCEL FILE
+# ============================================================
 
 cat("PLEASE SELECT YOUR EXCEL FILE (.xlsx)...\n")
+
 original_path <- file.choose()
-temp_file_path <- file.path(tempdir(), "temp_data.xlsx")
-file.copy(original_path, temp_file_path, overwrite = TRUE)
-all_experiments_raw <- read_excel(temp_file_path, sheet = 1)
-unlink(temp_file_path)
 
-# Φιλτράρισμα ΑΠΟΚΛΕΙΣΤΙΚΑ για 4 DPI
-data_4dpi <- all_experiments_raw %>%
-  rename(bacterium_id = 1, replicate_id = 2, assay = 3, time_point = 4, radial_growth = 5) %>%
-  mutate(bacterium_id = trimws(as.character(bacterium_id)), radial_growth = as.numeric(radial_growth),
-         time_point = as.numeric(time_point), assay = as.factor(assay)) %>%
-  filter(time_point == 4) %>% na.omit()
+all_experiments_raw <- read_excel(
+  original_path,
+  sheet = 1
+)
 
-if("control" %in% unique(data_4dpi$bacterium_id)){
-  data_4dpi$bacterium_id <- factor(data_4dpi$bacterium_id)
-  data_4dpi$bacterium_id <- relevel(data_4dpi$bacterium_id, ref = "control")
-}
 
-# Στατιστική Ανάλυση Tukey για 4 DPI
-all_letters_4 <- data.frame()
-for (ass in unique(data_4dpi$assay)) {
-  sub_data <- data_4dpi %>% filter(assay == ass)
-  if (nrow(sub_data) > length(unique(sub_data$bacterium_id))) {
-    model <- aov(radial_growth ~ bacterium_id, data = sub_data)
-    tukey_letters <- multcompLetters4(model, TukeyHSD(model))
-    labels_df <- sub_data %>% group_by(bacterium_id) %>%
-      summarise(max_growth = max(radial_growth, na.rm = TRUE), .groups = 'drop') %>%
-      mutate(assay = ass, stat_letter = tukey_letters$bacterium_id$Letters[as.character(bacterium_id)])
-    all_letters_4 <- rbind(all_letters_4, labels_df)
+# ============================================================
+# 2. RENAME THE 5 COLUMNS
+# ============================================================
+
+data <- all_experiments_raw %>%
+  rename(
+    bacterium_id = 1,
+    replicate_id = 2,
+    assay = 3,
+    time_point = 4,
+    radial_growth = 5
+  ) %>%
+  mutate(
+    bacterium_id = trimws(as.character(bacterium_id)),
+    replicate_id = as.character(replicate_id),
+    assay = as.factor(assay),
+    time_point = as.numeric(time_point),
+    radial_growth = as.numeric(radial_growth)
+  )
+
+
+# ============================================================
+# 3. FUNCTION FOR TUKEY ANALYSIS
+# ============================================================
+
+run_tukey <- function(data_dpi, day) {
+
+  all_letters <- data.frame()
+  all_comparisons <- data.frame()
+
+  for (ass in unique(data_dpi$assay)) {
+
+    sub_data <- data_dpi %>%
+      filter(assay == ass) %>%
+      droplevels()
+
+    if (
+      nrow(sub_data) > length(unique(sub_data$bacterium_id)) &&
+      length(unique(sub_data$bacterium_id)) > 1
+    ) {
+
+      model <- aov(
+        radial_growth ~ bacterium_id,
+        data = sub_data
+      )
+
+      tukey_result <- TukeyHSD(model)
+
+      # Tukey pairwise comparisons
+      tukey_df <- as.data.frame(
+        tukey_result[["bacterium_id"]]
+      )
+
+      tukey_df$Comparison <- rownames(tukey_df)
+      tukey_df$Assay <- as.character(ass)
+      tukey_df$DPI <- day
+
+      all_comparisons <- bind_rows(
+        all_comparisons,
+        tukey_df
+      )
+
+      # Tukey grouping letters
+      tukey_letters <- multcompLetters4(
+        model,
+        tukey_result
+      )
+
+      letters_df <- sub_data %>%
+        group_by(bacterium_id) %>%
+        summarise(
+          max_growth = max(
+            radial_growth,
+            na.rm = TRUE
+          ),
+          .groups = "drop"
+        ) %>%
+        mutate(
+          assay = as.character(ass),
+          stat_letter = tukey_letters[["bacterium_id"]][["Letters"]][
+            as.character(bacterium_id)
+          ],
+          DPI = day
+        )
+
+      all_letters <- bind_rows(
+        all_letters,
+        letters_df
+      )
+    }
   }
+
+  list(
+    letters = all_letters,
+    comparisons = all_comparisons
+  )
 }
-all_letters_4$y_pos <- all_letters_4$max_growth + (max(data_4dpi$radial_growth) * 0.04)
 
-# Δημιουργία και εμφάνιση του Box Plot για το 4 DPI στο RStudio
-plot_4dpi <- ggplot(data_4dpi, aes(x = assay, y = radial_growth, fill = bacterium_id)) +
-  geom_boxplot(outlier.size = 1.5, alpha = 0.8, position = position_dodge(0.8)) +
-  geom_text(data = all_letters_4, aes(x = assay, y = y_pos, label = stat_letter, group = bacterium_id),
-            position = position_dodge(0.8), vjust = 0, fontface = "bold", size = 3.8) +
-  labs(title = "Botrytis Radial Growth - Day 4 DPI", x = "Assay", y = "Radial Growth", fill = "Sample / Control") +
-  theme_minimal(base_size = 14) + theme(plot.title = element_text(face = "bold", hjust = 0.5))
 
-print(plot_4dpi) # Εμφανίζεται κατευθείαν στα Plots δεξιά
+# ============================================================
+# 4. FUNCTION TO CREATE PLOT
+# ============================================================
+
+create_plot <- function(data_dpi, day, filename) {
+
+  plot_dpi <- ggplot(
+    data_dpi,
+    aes(
+      x = assay,
+      y = radial_growth,
+      fill = bacterium_id
+    )
+  ) +
+
+    # BOXPLOTS
+    geom_boxplot(
+      outlier.size = 1.5,
+      alpha = 0.8,
+      width = 0.65,
+      position = position_dodge(
+        width = 0.8
+      )
+    ) +
+
+    # Y AXIS
+    coord_cartesian(
+      ylim = c(5.5, 8.9)
+    ) +
+
+    # LABELS
+    labs(
+      title = paste0(
+        "Botrytis Radial Growth - Day ",
+        day,
+        " DPI"
+      ),
+      x = "Assay",
+      y = "Radial Growth",
+      fill = "Sample / Control"
+    ) +
+
+    # THEME
+    theme_minimal(
+      base_size = 14
+    ) +
+
+    theme(
+
+      plot.title = element_text(
+        face = "bold",
+        hjust = 0.5,
+        size = 17
+      ),
+
+      axis.title.x = element_text(
+        size = 14,
+        face = "bold"
+      ),
+
+      axis.title.y = element_text(
+        size = 14,
+        face = "bold"
+      ),
+
+      axis.text.x = element_text(
+        size = 13,
+        face = "bold"
+      ),
+
+      axis.text.y = element_text(
+        size = 12
+      ),
+
+      legend.title = element_text(
+        face = "bold"
+      ),
+
+      legend.text = element_text(
+        size = 11
+      ),
+
+      panel.grid.major.x =
+        element_blank(),
+
+      plot.margin = margin(
+        15, 15, 15, 15
+      )
+    )
+
+  print(plot_dpi)
+
+  ggsave(
+    filename = filename,
+    plot = plot_dpi,
+    width = 10,
+    height = 7,
+    dpi = 300
+  )
+
+  cat(
+    "\nPlot saved as:",
+    filename,
+    "\n"
+  )
+
+  return(plot_dpi)
+}
+
+
+# ============================================================
+# 5. ANALYSIS FOR 5 DPI
+# ============================================================
+
+data_5dpi <- data %>%
+  filter(time_point == 5) %>%
+  na.omit()
+
+cat(
+  "\nNumber of observations at 5 DPI:",
+  nrow(data_5dpi),
+  "\n"
+)
+
+cat("\nSamples included at 5 DPI:\n")
+print(unique(data_5dpi$bacterium_id))
+
+cat("\nAssays included at 5 DPI:\n")
+print(unique(data_5dpi$assay))
+
+tukey_5 <- run_tukey(
+  data_5dpi,
+  5
+)
+
+plot_5dpi <- create_plot(
+  data_5dpi,
+  5,
+  "Botrytis_Radial_Growth_5DPI.png"
+)
+
+
+# ============================================================
+# 6. ANALYSIS FOR 7 DPI
+# ============================================================
+
+data_7dpi <- data %>%
+  filter(time_point == 7) %>%
+  na.omit()
+
+cat(
+  "\nNumber of observations at 7 DPI:",
+  nrow(data_7dpi),
+  "\n"
+)
+
+cat("\nSamples included at 7 DPI:\n")
+print(unique(data_7dpi$bacterium_id))
+
+cat("\nAssays included at 7 DPI:\n")
+print(unique(data_7dpi$assay))
+
+tukey_7 <- run_tukey(
+  data_7dpi,
+  7
+)
+
+plot_7dpi <- create_plot(
+  data_7dpi,
+  7,
+  "Botrytis_Radial_Growth_7DPI.png"
+)
+
+
+# ============================================================
+# 7. SAVE TUKEY PAIRWISE COMPARISONS
+# ============================================================
+
+all_tukey_results <- bind_rows(
+  tukey_5$comparisons,
+  tukey_7$comparisons
+)
+
+write.csv(
+  all_tukey_results,
+  "Botrytis_Tukey_Results_5_and_7DPI.csv",
+  row.names = FALSE
+)
+
+
+# ============================================================
+# 8. SAVE TUKEY GROUPING LETTERS SEPARATELY
+# ============================================================
+
+all_tukey_letters <- bind_rows(
+  tukey_5$letters,
+  tukey_7$letters
+)
+
+write.csv(
+  all_tukey_letters,
+  "Botrytis_Tukey_Letters_5_and_7DPI.csv",
+  row.names = FALSE
+)
+
+
+# ============================================================
+# 9. FINISHED
+# ============================================================
+
+cat("\nAll analyses completed successfully.\n")
+cat("Created plots for 5 DPI and 7 DPI.\n")
+cat("Tukey pairwise results saved to CSV.\n")
+cat("Tukey grouping letters saved to CSV.\n")
